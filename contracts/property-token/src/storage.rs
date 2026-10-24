@@ -18,6 +18,8 @@ pub enum DataKey {
     Paused,
     PendingAdmin,
     Allowance(Address, Address),
+    MaxPerHolder,
+    Frozen(Address),
 }
 
 pub fn extend_instance(env: &Env) {
@@ -90,6 +92,36 @@ pub fn is_paused(env: &Env) -> bool {
 
 pub fn set_paused(env: &Env, paused: bool) {
     env.storage().instance().set(&DataKey::Paused, &paused);
+}
+
+pub fn max_per_holder(env: &Env) -> Option<i128> {
+    env.storage().instance().get(&DataKey::MaxPerHolder)
+}
+
+pub fn set_max_per_holder(env: &Env, limit: Option<i128>) {
+    match limit {
+        Some(value) => env.storage().instance().set(&DataKey::MaxPerHolder, &value),
+        None => env.storage().instance().remove(&DataKey::MaxPerHolder),
+    }
+}
+
+pub fn is_frozen(env: &Env, id: &Address) -> bool {
+    env.storage()
+        .persistent()
+        .get(&DataKey::Frozen(id.clone()))
+        .unwrap_or(false)
+}
+
+pub fn set_frozen(env: &Env, id: &Address, frozen: bool) {
+    let key = DataKey::Frozen(id.clone());
+    if frozen {
+        env.storage().persistent().set(&key, &true);
+        env.storage()
+            .persistent()
+            .extend_ttl(&key, TTL_THRESHOLD, TTL_EXTEND_TO);
+    } else {
+        env.storage().persistent().remove(&key);
+    }
 }
 
 pub fn pending_admin(env: &Env) -> Option<Address> {

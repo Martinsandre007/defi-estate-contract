@@ -442,3 +442,205 @@ fn cancel_pending_admin() {
     assert_eq!(s.client.pending_admin(), None);
     assert_eq!(s.client.admin(), s.admin);
 }
+
+#[test]
+fn max_per_holder_defaults_to_none() {
+    let s = setup();
+    assert_eq!(s.client.max_per_holder(), None);
+}
+
+#[test]
+fn set_max_per_holder_updates_view() {
+    let s = setup();
+    s.client.set_max_per_holder(&Some(100));
+    assert_eq!(s.client.max_per_holder(), Some(100));
+    s.client.set_max_per_holder(&None);
+    assert_eq!(s.client.max_per_holder(), None);
+}
+
+#[test]
+fn mint_at_holder_limit_succeeds() {
+    let s = setup();
+    let alice = investor(&s);
+    s.client.set_max_per_holder(&Some(100));
+    s.client.mint(&alice, &100);
+    assert_eq!(s.client.balance(&alice), 100);
+}
+
+#[test]
+fn mint_over_holder_limit_fails() {
+    let s = setup();
+    let alice = investor(&s);
+    s.client.set_max_per_holder(&Some(100));
+    s.client.mint(&alice, &100);
+    assert_eq!(
+        s.client.try_mint(&alice, &1),
+        Err(Ok(err(Error::HolderLimitExceeded)))
+    );
+    assert_eq!(s.client.balance(&alice), 100);
+}
+
+#[test]
+fn transfer_at_holder_limit_succeeds() {
+    let s = setup();
+    let alice = investor(&s);
+    let bob = investor(&s);
+    s.client.set_max_per_holder(&Some(100));
+    s.client.mint(&alice, &200);
+    s.client.transfer(&alice, &bob, &100);
+    assert_eq!(s.client.balance(&bob), 100);
+}
+
+#[test]
+fn transfer_over_holder_limit_fails() {
+    let s = setup();
+    let alice = investor(&s);
+    let bob = investor(&s);
+    s.client.set_max_per_holder(&Some(100));
+    s.client.mint(&alice, &200);
+    s.client.mint(&bob, &50);
+    assert_eq!(
+        s.client.try_transfer(&alice, &bob, &51),
+        Err(Ok(err(Error::HolderLimitExceeded)))
+    );
+    assert_eq!(s.client.balance(&bob), 50);
+}
+
+#[test]
+fn no_holder_limit_allows_any_amount() {
+    let s = setup();
+    let alice = investor(&s);
+    let bob = investor(&s);
+    s.client.mint(&alice, &1_000);
+    s.client.transfer(&alice, &bob, &1_000);
+    assert_eq!(s.client.balance(&bob), 1_000);
+}
+
+#[test]
+fn frozen_account_cannot_send_or_receive() {
+    let s = setup();
+    let alice = investor(&s);
+    let bob = investor(&s);
+    let carol = investor(&s);
+    s.client.mint(&alice, &100);
+    s.client.mint(&bob, &100);
+
+    s.client.freeze(&bob);
+    assert!(s.client.is_frozen(&bob));
+
+    // Frozen account cannot send.
+    assert_eq!(
+        s.client.try_transfer(&bob, &carol, &1),
+        Err(Ok(err(Error::AccountFrozen)))
+    );
+    // Frozen account cannot receive.
+    assert_eq!(
+        s.client.try_transfer(&alice, &bob, &1),
+        Err(Ok(err(Error::AccountFrozen)))
+    );
+
+    // Other holders still transact freely.
+    s.client.transfer(&alice, &carol, &10);
+    assert_eq!(s.client.balance(&carol), 10);
+}
+
+#[test]
+fn unfreeze_restores_transfers() {
+    let s = setup();
+    let alice = investor(&s);
+    let bob = investor(&s);
+    s.client.mint(&alice, &100);
+    s.client.freeze(&bob);
+    s.client.unfreeze(&bob);
+    assert!(!s.client.is_frozen(&bob));
+    s.client.transfer(&alice, &bob, &10);
+    assert_eq!(s.client.balance(&bob), 10);
+}
+
+#[test]
+#[should_panic]
+fn freeze_requires_admin_auth() {
+    let env = Env::default();
+    let admin = Address::generate(&env);
+    let id = env.register(
+        PropertyToken,
+        (
+            admin,
+            String::from_str(&env, "prop-001"),
+            String::from_str(&env, "Shares"),
+            String::from_str(&env, "SHR"),
+            100i128,
+        ),
+    );
+    let client = PropertyTokenClient::new(&env, &id);
+    // No mocked auths: the admin has not signed, so this must panic.
+    client.freeze(&Address::generate(&env));
+}
+
+#[test]
+#[should_panic]
+fn unfreeze_requires_admin_auth() {
+    let env = Env::default();
+    let admin = Address::generate(&env);
+    let id = env.register(
+        PropertyToken,
+        (
+            admin,
+            String::from_str(&env, "prop-001"),
+            String::from_str(&env, "Shares"),
+            String::from_str(&env, "SHR"),
+            100i128,
+        ),
+    );
+    let client = PropertyTokenClient::new(&env, &id);
+    // No mocked auths: the admin has not signed, so this must panic.
+    client.unfreeze(&Address::generate(&env));
+}
+
+#[test]
+fn recover_moves_shares_without_changing_supply() {
+    let s = setup();
+    let alice = investor(&s);
+    let bob = investor(&s);
+    s.client.mint(&alice, &100);
+    let supply_before = s.client.total_supply();
+
+    s.client.recover(&alice, &bob, &40);
+
+    assert_eq!(s.client.balance(&alice), 60);
+    assert_eq!(s.client.balance(&bob), 40);
+    assert_eq!(s.client.total_supply(), supply_before);
+}
+
+#[test]
+fn recover_to_non_whitelisted_fails() {
+    let s = setup();
+    let alice = investor(&s);
+    let stranger = Address::generate(&s.env);
+    s.client.mint(&alice, &100);
+    assert_eq!(
+        s.client.try_recover(&alice, &stranger, &10),
+        Err(Ok(err(Error::NotWhitelisted)))
+    );
+    assert_eq!(s.client.balance(&alice), 100);
+}
+
+#[test]
+#[should_panic]
+fn recover_requires_admin_auth() {
+    let env = Env::default();
+    let admin = Address::generate(&env);
+    let id = env.register(
+        PropertyToken,
+        (
+            admin,
+            String::from_str(&env, "prop-001"),
+            String::from_str(&env, "Shares"),
+            String::from_str(&env, "SHR"),
+            100i128,
+        ),
+    );
+    let client = PropertyTokenClient::new(&env, &id);
+    // No mocked auths: the admin has not signed, so this must panic.
+    client.recover(&Address::generate(&env), &Address::generate(&env), &1);
+}

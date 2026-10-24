@@ -18,15 +18,39 @@ Capped, whitelist-gated share token with 0 decimals.
 | `burn_from(spender, from, amount)`                                                                              | `spender`| spends allowance, reduces supply        |
 | `pause()`                                                                                                       | admin    | blocks `mint` and `transfer`            |
 | `unpause()`                                                                                                     | admin    |                                         |
+| `set_max_per_holder(max_per_holder: Option<i128>)`                                                              | admin    | caps shares per holder; `None` removes the cap |
+| `freeze(account)`                                                                                               | admin    | blocks `transfer` from and to `account` |
+| `unfreeze(account)`                                                                                             | admin    |                                         |
+| `recover(from, to, amount)`                                                                                     | admin    | moves shares after off-chain identity check; `to` must be whitelisted |
 | `propose_admin(new_admin)`                                                                                      | admin    | starts two-step admin transfer          |
 | `accept_admin()`                                                                                                | new admin| completes admin transfer                |
 | `cancel_admin_proposal()`                                                                                       | admin    | clears the pending admin                |
 | `set_admin(new_admin)`                                                                                          | admin    |                                         |
 | `upgrade(new_wasm_hash)`                                                                                        | admin    | in-place wasm upgrade                   |
-| `balance`, `total_supply`, `max_supply`, `is_whitelisted`, `name`, `symbol`, `decimals`, `property_id`, `admin`, `allowance`, `is_paused`, `pending_admin` | none     | views                                   |
+| `balance`, `total_supply`, `max_supply`, `max_per_holder`, `is_whitelisted`, `is_frozen`, `name`, `symbol`, `decimals`, `property_id`, `admin`, `allowance`, `is_paused`, `pending_admin` | none     | views                                   |
 | `version`                                                                                                       | none     | crate version constant                  |
 
-Errors: `InvalidAmount`, `NotWhitelisted`, `InsufficientBalance`, `MaxSupplyExceeded`, `Overflow`, `Paused`.
+Errors: `InvalidAmount`, `NotWhitelisted`, `InsufficientBalance`, `MaxSupplyExceeded`, `Overflow`, `Paused`, `HolderLimitExceeded`, `AccountFrozen`.
+
+### Per-holder limit
+
+`set_max_per_holder` sets an optional cap on the number of shares a single holder may own. When set, `mint` and `transfer` check the recipient's balance after the operation and fail with `HolderLimitExceeded` if it would exceed the cap. Passing `None` removes the limit. The current value is returned by `max_per_holder()`; changing it emits a `MaxPerHolderChanged` event.
+
+### Frozen accounts
+
+`freeze(account)` and `unfreeze(account)` let the admin block a single holder without pausing the whole token. A frozen account cannot send or receive shares: `transfer` (and `transfer_from`) fail with `AccountFrozen` when either side is frozen. Other holders are unaffected. `is_frozen(account)` reports the current state. Freezing emits `AccountFrozen` and unfreezing emits `AccountUnfrozen`.
+
+### Admin recovery
+
+`recover(from, to, amount)` lets the admin move shares from a holder's address to a new address, for investors who lose access to their wallet. It requires admin auth only (no `from` auth) and `to` must be whitelisted. `total_supply` is unchanged. Each recovery emits a distinct `Recovered { from, to, amount }` event so it is visible in audits.
+
+Off-chain approval process before calling `recover`:
+
+1. The investor contacts the operator and proves their identity through the same KYC process used at onboarding (for example government ID plus a video call or signed attestation).
+2. The operator verifies the request against its records and obtains the required internal sign-off (compliance/legal) for the recovery.
+3. The operator whitelists the investor's new address with `set_whitelisted`.
+4. The admin invokes `recover(from, to, amount)` with the old and new addresses and the full share balance.
+5. The `Recovered` event is recorded and reconciled against the off-chain approval ticket.
 
 ## yield-distributor
 
@@ -36,7 +60,8 @@ Holds rental income in a payout asset (for example a USDC Stellar Asset Contract
 | --------------------------------------------------------------------------------------------------------------- | -------- | ----------------------------------------------------------------------- |
 | `__constructor(admin, payout_token, share_token)`                                                               | deployer |                                                                         |
 | `distribute(allocations: Map<Address, i128>)`                                                                   | admin    | pulls the sum from admin, credits each holder, max 100 entries per call |
-| `claim(holder)`                                                                                                 | holder   | pays everything owed                                                    |
+| `claim(holder)`                                                                                                 | holder   | pays everything owed to `holder`                                        |
+| `claim_to(holder, destination)`                                                                                 | holder   | pays everything owed to `destination`                                   |
 | `propose_admin(new_admin)`                                                                                      | admin    | starts two-step admin transfer                                          |
 | `accept_admin()`                                                                                                | new admin| completes admin transfer                                                |
 | `cancel_admin_proposal()`                                                                                       | admin    | clears the pending admin                                                |
@@ -47,6 +72,8 @@ Holds rental income in a payout asset (for example a USDC Stellar Asset Contract
 Errors: `InvalidAmount`, `InvalidAllocations`, `NothingToClaim`, `RecipientNotWhitelisted`, `Overflow`.
 
 Allocations are computed off-chain by the API from a balance snapshot, which keeps share transfers cheap and avoids per-transfer reward bookkeeping.
+
+`claim_to` lets a holder direct their payout to another address they control (for example a hot wallet or exchange deposit address) while keeping shares in a cold wallet. It requires `holder` auth and zeroes the holder's claimable balance, exactly like `claim`. The `Claimed` event includes both `holder` and `destination` so payouts can be traced to the receiving account.
 
 ### Per-round audit records
 

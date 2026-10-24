@@ -10,4 +10,7 @@ pub enum Error {
     MaxSupplyExceeded = 4,
     Overflow = 5,
     Paused = 6,
+    HolderLimitExceeded = 7,
+    AccountFrozen = 8,
+    InsufficientAllowance = 9,
 }

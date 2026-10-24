@@ -107,20 +107,14 @@ impl YieldDistributor {
     /// Sends the holder everything credited to them so far. Returns the amount paid.
     pub fn claim(env: Env, holder: Address) -> i128 {
         holder.require_auth();
-        let amount = storage::claimable(&env, &holder);
-        if amount == 0 {
-            panic_with_error!(&env, Error::NothingToClaim);
-        }
-        storage::set_claimable(&env, &holder, 0);
-        storage::add_total(&env, DataKey::TotalClaimed, amount);
+        Self::payout(&env, &holder, &holder)
+    }
 
-        token::Client::new(&env, &storage::payout_token(&env)).transfer(
-            &env.current_contract_address(),
-            &holder,
-            &amount,
-        );
-        events::claimed(&env, holder, amount);
-        amount
+    /// Sends the holder everything credited to them so far to `destination`.
+    /// Returns the amount paid.
+    pub fn claim_to(env: Env, holder: Address, destination: Address) -> i128 {
+        holder.require_auth();
+        Self::payout(&env, &holder, &destination)
     }
 
     /// Reclaims a holder's unclaimed balance back to the admin once the claim
@@ -233,5 +227,25 @@ impl YieldDistributor {
 
     pub fn pending_admin(env: Env) -> Option<Address> {
         env.storage().instance().get(&DataKey::PendingAdmin)
+    }
+}
+
+impl YieldDistributor {
+    /// Shared claim logic: zeroes `holder`'s balance and pays it out to `destination`.
+    fn payout(env: &Env, holder: &Address, destination: &Address) -> i128 {
+        let amount = storage::claimable(env, holder);
+        if amount == 0 {
+            panic_with_error!(env, Error::NothingToClaim);
+        }
+        storage::set_claimable(env, holder, 0);
+        storage::add_total(env, DataKey::TotalClaimed, amount);
+
+        token::Client::new(env, &storage::payout_token(env)).transfer(
+            &env.current_contract_address(),
+            destination,
+            &amount,
+        );
+        events::claimed(env, holder.clone(), destination.clone(), amount);
+        amount
     }
 }

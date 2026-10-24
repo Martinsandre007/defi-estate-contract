@@ -57,11 +57,58 @@ impl PropertyToken {
         events::whitelist_updated(&env, account, allowed);
     }
 
+    /// Sets (or clears, with `None`) the maximum number of shares a single
+    /// holder may own. Admin only.
+    pub fn set_max_per_holder(env: Env, max_per_holder: Option<i128>) {
+        storage::admin(&env).require_auth();
+        if let Some(limit) = max_per_holder {
+            if limit <= 0 {
+                panic_with_error!(&env, Error::InvalidAmount);
+            }
+        }
+        match &max_per_holder {
+            Some(limit) => env.storage().instance().set(&DataKey::MaxPerHolder, limit),
+            None => env.storage().instance().remove(&DataKey::MaxPerHolder),
+        }
+        events::max_per_holder_updated(&env, max_per_holder);
+    }
+
+    /// Freezes a single account: it can neither send nor receive shares.
+    /// Admin only.
+    pub fn freeze(env: Env, account: Address) {
+        storage::admin(&env).require_auth();
+        storage::set_frozen(&env, &account, true);
+        events::account_frozen(&env, account);
+    }
+
+    /// Unfreezes a previously frozen account. Admin only.
+    pub fn unfreeze(env: Env, account: Address) {
+        storage::admin(&env).require_auth();
+        storage::set_frozen(&env, &account, false);
+        events::account_unfrozen(&env, account);
+    }
+
+    /// Moves shares from `from` to `to` without `from`'s authorization, for
+    /// investors who lost access to their wallet. Admin only; `to` must be
+    /// whitelisted. Supply is unchanged.
+    pub fn recover(env: Env, from: Address, to: Address, amount: i128) {
+        storage::admin(&env).require_auth();
+        require_positive(&env, amount);
+        require_whitelisted(&env, &to);
+        require_not_frozen(&env, &to);
+        require_holder_limit(&env, &to, amount);
+
+        move_shares(&env, &from, &to, amount);
+        events::recovered(&env, from, to, amount);
+    }
+
     pub fn mint(env: Env, to: Address, amount: i128) {
         storage::admin(&env).require_auth();
         require_not_paused(&env);
         require_positive(&env, amount);
         require_whitelisted(&env, &to);
+        require_not_frozen(&env, &to);
+        require_holder_limit(&env, &to, amount);
 
         let supply = storage::total_supply(&env)
             .checked_add(amount)
@@ -128,6 +175,9 @@ impl PropertyToken {
         require_not_paused(&env);
         require_positive(&env, amount);
         require_whitelisted(&env, &to);
+        require_not_frozen(&env, &from);
+        require_not_frozen(&env, &to);
+        require_holder_limit(&env, &to, amount);
 
         move_shares(&env, &from, &to, amount);
         events::transfer(&env, from, to, amount);
@@ -147,6 +197,9 @@ impl PropertyToken {
         require_not_paused(&env);
         require_positive(&env, amount);
         require_whitelisted(&env, &to);
+        require_not_frozen(&env, &from);
+        require_not_frozen(&env, &to);
+        require_holder_limit(&env, &to, amount);
 
         storage::spend_allowance(&env, &from, &spender, amount);
         move_shares(&env, &from, &to, amount);
@@ -177,6 +230,14 @@ impl PropertyToken {
 
     pub fn is_whitelisted(env: Env, account: Address) -> bool {
         storage::is_whitelisted(&env, &account)
+    }
+
+    pub fn max_per_holder(env: Env) -> Option<i128> {
+        storage::max_per_holder(&env)
+    }
+
+    pub fn is_frozen(env: Env, account: Address) -> bool {
+        storage::is_frozen(&env, &account)
     }
 
     pub fn admin(env: Env) -> Address {
@@ -231,6 +292,25 @@ fn require_whitelisted(env: &Env, account: &Address) {
 fn require_not_paused(env: &Env) {
     if storage::is_paused(env) {
         panic_with_error!(env, Error::Paused);
+    }
+}
+
+fn require_not_frozen(env: &Env, account: &Address) {
+    if storage::is_frozen(env, account) {
+        panic_with_error!(env, Error::AccountFrozen);
+    }
+}
+
+/// Ensures crediting `amount` to `account` keeps it within the configured
+/// per-holder limit, if any.
+fn require_holder_limit(env: &Env, account: &Address, amount: i128) {
+    if let Some(limit) = storage::max_per_holder(env) {
+        let new_balance = storage::balance(env, account)
+            .checked_add(amount)
+            .unwrap_or_else(|| panic_with_error!(env, Error::Overflow));
+        if new_balance > limit {
+            panic_with_error!(env, Error::HolderLimitExceeded);
+        }
     }
 }
 

@@ -96,6 +96,65 @@ fn claims_accumulate_across_rounds() {
 }
 
 #[test]
+fn claim_to_pays_destination_and_zeroes_holder() {
+    let s = setup();
+    let alice = Address::generate(&s.env);
+    let destination = Address::generate(&s.env);
+    whitelist(&s, &alice);
+
+    s.client.distribute(&map![&s.env, (alice.clone(), 100i128)]);
+    s.client.distribute(&map![&s.env, (alice.clone(), 50i128)]);
+
+    assert_eq!(s.client.claim_to(&alice, &destination), 150);
+    assert_eq!(s.usdc.balance(&destination), 150);
+    assert_eq!(s.usdc.balance(&alice), 0);
+    assert_eq!(s.client.claimable(&alice), 0);
+    assert_eq!(s.client.total_claimed(), 150);
+}
+
+#[test]
+fn claim_to_with_nothing_owed_fails() {
+    let s = setup();
+    let alice = Address::generate(&s.env);
+    let destination = Address::generate(&s.env);
+    assert_eq!(
+        s.client.try_claim_to(&alice, &destination),
+        Err(Ok(err(Error::NothingToClaim)))
+    );
+}
+
+#[test]
+fn double_claim_to_pays_once() {
+    let s = setup();
+    let alice = Address::generate(&s.env);
+    let destination = Address::generate(&s.env);
+    whitelist(&s, &alice);
+    s.client.distribute(&map![&s.env, (alice.clone(), 40i128)]);
+    s.client.claim_to(&alice, &destination);
+    assert_eq!(
+        s.client.try_claim_to(&alice, &destination),
+        Err(Ok(err(Error::NothingToClaim)))
+    );
+    assert_eq!(s.usdc.balance(&destination), 40);
+    assert_eq!(s.usdc.balance(&alice), 0);
+}
+
+#[test]
+fn claim_to_requires_holder_auth() {
+    let s = setup();
+    let alice = Address::generate(&s.env);
+    let destination = Address::generate(&s.env);
+    whitelist(&s, &alice);
+    s.client.distribute(&map![&s.env, (alice.clone(), 100i128)]);
+
+    // No auths mocked: the holder auth requirement must fail.
+    s.env.mock_auths(&[]);
+    assert!(s.client.try_claim_to(&alice, &destination).is_err());
+    assert_eq!(s.usdc.balance(&destination), 0);
+    assert_eq!(s.client.claimable(&alice), 100);
+}
+
+#[test]
 fn claim_with_nothing_owed_fails() {
     let s = setup();
     let alice = Address::generate(&s.env);

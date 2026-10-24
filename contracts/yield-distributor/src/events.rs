@@ -12,6 +12,7 @@ pub struct Distributed {
 pub struct Claimed {
     #[topic]
     pub holder: Address,
+    pub destination: Address,
     pub amount: i128,
 }
 
@@ -49,8 +50,13 @@ pub fn distributed(env: &Env, round: u32, total: i128, recipients: u32) {
     .publish(env);
 }
 
-pub fn claimed(env: &Env, holder: Address, amount: i128) {
-    Claimed { holder, amount }.publish(env);
+pub fn claimed(env: &Env, holder: Address, destination: Address, amount: i128) {
+    Claimed {
+        holder,
+        destination,
+        amount,
+    }
+    .publish(env);
 }
 
 pub fn reclaimed(env: &Env, holder: Address, amount: i128) {
