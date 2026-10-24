@@ -61,6 +61,32 @@ pub struct Upgraded {
     pub new_wasm_hash: BytesN<32>,
 }
 
+#[contractevent]
+pub struct MaxPerHolderChanged {
+    pub max_per_holder: Option<i128>,
+}
+
+#[contractevent]
+pub struct AccountFrozen {
+    #[topic]
+    pub account: Address,
+}
+
+#[contractevent]
+pub struct AccountUnfrozen {
+    #[topic]
+    pub account: Address,
+}
+
+#[contractevent]
+pub struct Recovered {
+    #[topic]
+    pub from: Address,
+    #[topic]
+    pub to: Address,
+    pub amount: i128,
+}
+
 pub fn mint(env: &Env, to: Address, amount: i128) {
     Mint { to, amount }.publish(env);
 }
@@ -105,4 +131,20 @@ pub fn admin_changed(env: &Env, new_admin: Address) {
 
 pub fn upgraded(env: &Env, new_wasm_hash: BytesN<32>) {
     Upgraded { new_wasm_hash }.publish(env);
+}
+
+pub fn max_per_holder_changed(env: &Env, max_per_holder: Option<i128>) {
+    MaxPerHolderChanged { max_per_holder }.publish(env);
+}
+
+pub fn account_frozen(env: &Env, account: Address) {
+    AccountFrozen { account }.publish(env);
+}
+
+pub fn account_unfrozen(env: &Env, account: Address) {
+    AccountUnfrozen { account }.publish(env);
+}
+
+pub fn recovered(env: &Env, from: Address, to: Address, amount: i128) {
+    Recovered { from, to, amount }.publish(env);
 }

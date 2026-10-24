@@ -32,7 +32,12 @@ fn setup() -> Setup<'static> {
     let share_token = PropertyTokenClient::new(&env, &share_token_id);
     let id = env.register(
         YieldDistributor,
-        (admin.clone(), sac.address(), share_token_id),
+        (
+            admin.clone(),
+            sac.address(),
+            share_token_id,
+            CLAIM_WINDOW_SECS,
+        ),
     );
     let client = YieldDistributorClient::new(&env, &id);
     Setup {
@@ -43,6 +48,9 @@ fn setup() -> Setup<'static> {
         client,
     }
 }
+
+/// Claim window used by the test setup, in seconds (one day).
+const CLAIM_WINDOW_SECS: u64 = 86_400;
 
 /// Whitelists `holder` on the property token so the distributor accepts it.
 fn whitelist(s: &Setup, holder: &Address) {
@@ -85,6 +93,65 @@ fn claims_accumulate_across_rounds() {
     assert_eq!(s.usdc.balance(&alice), 150);
     assert_eq!(s.client.claimable(&alice), 0);
     assert_eq!(s.client.total_claimed(), 150);
+}
+
+#[test]
+fn claim_to_pays_destination_and_zeroes_holder() {
+    let s = setup();
+    let alice = Address::generate(&s.env);
+    let destination = Address::generate(&s.env);
+    whitelist(&s, &alice);
+
+    s.client.distribute(&map![&s.env, (alice.clone(), 100i128)]);
+    s.client.distribute(&map![&s.env, (alice.clone(), 50i128)]);
+
+    assert_eq!(s.client.claim_to(&alice, &destination), 150);
+    assert_eq!(s.usdc.balance(&destination), 150);
+    assert_eq!(s.usdc.balance(&alice), 0);
+    assert_eq!(s.client.claimable(&alice), 0);
+    assert_eq!(s.client.total_claimed(), 150);
+}
+
+#[test]
+fn claim_to_with_nothing_owed_fails() {
+    let s = setup();
+    let alice = Address::generate(&s.env);
+    let destination = Address::generate(&s.env);
+    assert_eq!(
+        s.client.try_claim_to(&alice, &destination),
+        Err(Ok(err(Error::NothingToClaim)))
+    );
+}
+
+#[test]
+fn double_claim_to_pays_once() {
+    let s = setup();
+    let alice = Address::generate(&s.env);
+    let destination = Address::generate(&s.env);
+    whitelist(&s, &alice);
+    s.client.distribute(&map![&s.env, (alice.clone(), 40i128)]);
+    s.client.claim_to(&alice, &destination);
+    assert_eq!(
+        s.client.try_claim_to(&alice, &destination),
+        Err(Ok(err(Error::NothingToClaim)))
+    );
+    assert_eq!(s.usdc.balance(&destination), 40);
+    assert_eq!(s.usdc.balance(&alice), 0);
+}
+
+#[test]
+fn claim_to_requires_holder_auth() {
+    let s = setup();
+    let alice = Address::generate(&s.env);
+    let destination = Address::generate(&s.env);
+    whitelist(&s, &alice);
+    s.client.distribute(&map![&s.env, (alice.clone(), 100i128)]);
+
+    // No auths mocked: the holder auth requirement must fail.
+    s.env.mock_auths(&[]);
+    assert!(s.client.try_claim_to(&alice, &destination).is_err());
+    assert_eq!(s.usdc.balance(&destination), 0);
+    assert_eq!(s.client.claimable(&alice), 100);
 }
 
 #[test]
@@ -166,7 +233,7 @@ fn distribute_requires_admin_auth() {
     let share_token_id = env.register(PropertyToken, (admin.clone(),));
     let id = env.register(
         YieldDistributor,
-        (admin, sac.address(), share_token_id),
+        (admin, sac.address(), share_token_id, CLAIM_WINDOW_SECS),
     );
     let client = YieldDistributorClient::new(&env, &id);
     client.distribute(&map![&env, (Address::generate(&env), 1i128)]);
@@ -272,7 +339,7 @@ fn upgrade_requires_admin_auth() {
     let share_token_id = env.register(PropertyToken, (admin.clone(),));
     let id = env.register(
         YieldDistributor,
-        (admin, sac.address(), share_token_id),
+        (admin, sac.address(), share_token_id, CLAIM_WINDOW_SECS),
     );
     let client = YieldDistributorClient::new(&env, &id);
     let new_wasm_hash = env.deployer().upload_contract_wasm(YieldDistributorWasm::WASM);
@@ -358,4 +425,117 @@ fn distribute_to_max_allocations_stays_within_budget() {
         mem < mem_limit,
         "memory bytes {mem} exceed 80% of network limit {mem_limit}"
     );
+}
+
+#[test]
+fn reclaim_before_window_expires_fails() {
+    let s = setup();
+    let alice = Address::generate(&s.env);
+    whitelist(&s, &alice);
+
+    s.client.distribute(&map![&s.env, (alice.clone(), 500i128)]);
+
+    // Advance to just before the deadline.
+    s.env
+        .ledger()
+        .set_timestamp(s.env.ledger().timestamp() + CLAIM_WINDOW_SECS - 1);
+
+    assert_eq!(
+        s.client.try_reclaim(&alice),
+        Err(Ok(err(Error::ClaimWindowOpen)))
+    );
+    // Balance and accounting are untouched.
+    assert_eq!(s.client.claimable(&alice), 500);
+    assert_eq!(s.usdc.balance(&s.client.address), 500);
+    assert_eq!(s.client.total_reclaimed(), 0);
+}
+
+#[test]
+fn reclaim_after_window_pays_admin_and_emits_event() {
+    let s = setup();
+    let alice = Address::generate(&s.env);
+    whitelist(&s, &alice);
+
+    s.client.distribute(&map![&s.env, (alice.clone(), 500i128)]);
+    let admin_before = s.usdc.balance(&s.admin);
+
+    s.env
+        .ledger()
+        .set_timestamp(s.env.ledger().timestamp() + CLAIM_WINDOW_SECS);
+
+    s.client.reclaim(&alice);
+
+    assert_eq!(s.client.claimable(&alice), 0);
+    assert_eq!(s.client.total_reclaimed(), 500);
+    assert_eq!(s.usdc.balance(&s.admin), admin_before + 500);
+    assert_eq!(s.usdc.balance(&s.client.address), 0);
+
+    // A second reclaim has nothing left to move.
+    assert_eq!(
+        s.client.try_reclaim(&alice),
+        Err(Ok(err(Error::NothingToClaim)))
+    );
+}
+
+#[test]
+fn reclaim_with_nothing_owed_fails() {
+    let s = setup();
+    let alice = Address::generate(&s.env);
+
+    s.env
+        .ledger()
+        .set_timestamp(s.env.ledger().timestamp() + CLAIM_WINDOW_SECS);
+
+    assert_eq!(
+        s.client.try_reclaim(&alice),
+        Err(Ok(err(Error::NothingToClaim)))
+    );
+}
+
+#[test]
+fn totals_stay_consistent_after_claims_and_reclaims() {
+    let s = setup();
+    let alice = Address::generate(&s.env);
+    let bob = Address::generate(&s.env);
+    whitelist(&s, &alice);
+    whitelist(&s, &bob);
+
+    s.client.distribute(&map![
+        &s.env,
+        (alice.clone(), 600i128),
+        (bob.clone(), 400i128)
+    ]);
+
+    // Alice claims within the window.
+    s.client.claim(&alice);
+
+    // Bob never claims; the window lapses and the admin reclaims.
+    s.env
+        .ledger()
+        .set_timestamp(s.env.ledger().timestamp() + CLAIM_WINDOW_SECS);
+    s.client.reclaim(&bob);
+
+    assert_eq!(s.client.total_claimed(), 600);
+    assert_eq!(s.client.total_reclaimed(), 400);
+    assert_eq!(
+        s.client.total_distributed(),
+        s.client.total_claimed()
+            + s.client.total_reclaimed()
+            + s.usdc.balance(&s.client.address)
+    );
+}
+
+#[test]
+#[should_panic]
+fn reclaim_requires_admin_auth() {
+    let env = Env::default();
+    let admin = Address::generate(&env);
+    let sac = env.register_stellar_asset_contract_v2(admin.clone());
+    let share_token_id = env.register(PropertyToken, (admin.clone(),));
+    let id = env.register(
+        YieldDistributor,
+        (admin, sac.address(), share_token_id, CLAIM_WINDOW_SECS),
+    );
+    let client = YieldDistributorClient::new(&env, &id);
+    client.reclaim(&Address::generate(&env));
 }
