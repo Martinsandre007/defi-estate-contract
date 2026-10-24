@@ -1,6 +1,6 @@
 # Smart contracts
 
-Rust/Soroban workspace in this repository (`soroban-sdk` 26). One `property-token` and one `yield-distributor` are deployed per property.
+Rust/Soroban workspace in this repository (`soroban-sdk` 26). One `property-token` and one `yield-distributor` are deployed per property, both created through the `property-factory` contract, which keeps an on-chain registry of properties.
 
 ## property-token
 
@@ -63,6 +63,43 @@ pub struct RoundInfo {
 
 The record is written to persistent storage under `DataKey::Round(u32)` (the round number, matching the value returned by `round()`), and its TTL is extended like other persistent entries. `round_info(round)` returns `Some(RoundInfo)` for a past round and `None` for an unknown round.
 
+## property-factory
+
+Deploys a `property-token` and a `yield-distributor` for a property in a single call and keeps a registry of every property it created. The wasm hashes of both child contracts are stored at construction time and used with `env.deployer().with_current_contract(salt)`.
+
+| Function                                                                                                        | Auth     | Notes                                                                                  |
+| --------------------------------------------------------------------------------------------------------------- | -------- | -------------------------------------------------------------------------------------- |
+| `__constructor(admin, token_wasm_hash, distributor_wasm_hash)`                                                  | deployer | stores the admin and the uploaded wasm hashes of both child contracts                  |
+| `create_property(property_id, name, symbol, max_supply, payout_token)`                                          | admin    | deploys both child contracts and returns `(token_address, distributor_address)`        |
+| `get_property(property_id)`                                                                                     | none     | returns `Option<PropertyEntry>`                                                        |
+| `list_properties(start, limit)`                                                                                 | none     | paginated registry view, returns `Vec<PropertyEntry>`                                  |
+| `admin`, `token_wasm_hash`, `distributor_wasm_hash`, `property_count`                                           | none     | views                                                                                  |
+| `version`                                                                                                       | none     | crate version constant                                                                 |
+
+`create_property` salts the deployer with the `property_id`, so creating the same `property_id` twice fails. The token is deployed with `__constructor(admin, property_id, name, symbol, max_supply)` and the distributor with `__constructor(admin, payout_token, token_address)`; both child contracts use the factory admin as their admin.
+
+### Registry entry
+
+```rust
+pub struct PropertyEntry {
+    pub property_id: String,
+    pub token: Address,        // property-token contract
+    pub distributor: Address,  // yield-distributor contract
+    pub name: String,
+    pub symbol: String,
+    pub max_supply: i128,
+    pub payout_token: Address,
+}
+```
+
+`list_properties(start, limit)` returns up to `limit` entries starting at index `start` (0-based, in creation order); an out-of-range `start` returns an empty vector.
+
+### Events
+
+`create_property` emits a `PropertyCreated` event carrying the `property_id`, the token address and the distributor address.
+
+Errors: `AlreadyInitialized`, `PropertyAlreadyExists`, `InvalidAmount`, `InvalidLimit`.
+
 ## Build, test, deploy
 
 ```bash
@@ -74,6 +111,8 @@ stellar contract build            # targets wasm32v1-none
 stellar keys generate --global admin --network testnet --fund
 scripts/deploy-contracts.sh admin <property-uuid> "Lekki Garden Shares" LKGS 10000 <usdc-sac-id> testnet
 ```
+
+`scripts/deploy-contracts.sh` uploads the `property_token.wasm` and `yield_distributor.wasm` hashes, deploys the `property-factory` with those hashes, then calls `create_property` on the factory. It prints the factory ID plus the token and distributor addresses returned by the call.
 
 Then record the IDs in `deployments/testnet.json` and copy them into `src/shared/contracts/contracts.testnet.json` in both [defi-estate-frontend](https://github.com/defi-estate/defi-estate-frontend) and [defi-estate-backend](https://github.com/defi-estate/defi-estate-backend).
 
