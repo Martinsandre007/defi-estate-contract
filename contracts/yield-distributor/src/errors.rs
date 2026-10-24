@@ -9,4 +9,5 @@ pub enum Error {
     NothingToClaim = 3,
     Overflow = 4,
     RecipientNotWhitelisted = 5,
+    ClaimWindowOpen = 6,
 }

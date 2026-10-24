@@ -16,6 +16,13 @@ pub struct Claimed {
 }
 
 #[contractevent]
+pub struct Reclaimed {
+    #[topic]
+    pub holder: Address,
+    pub amount: i128,
+}
+
+#[contractevent]
 pub struct AdminProposed {
     #[topic]
     pub new_admin: Address,
@@ -44,6 +51,10 @@ pub fn distributed(env: &Env, round: u32, total: i128, recipients: u32) {
 
 pub fn claimed(env: &Env, holder: Address, amount: i128) {
     Claimed { holder, amount }.publish(env);
+}
+
+pub fn reclaimed(env: &Env, holder: Address, amount: i128) {
+    Reclaimed { holder, amount }.publish(env);
 }
 
 pub fn admin_proposed(env: &Env, new_admin: Address) {

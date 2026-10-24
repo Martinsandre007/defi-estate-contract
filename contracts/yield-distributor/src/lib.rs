@@ -36,14 +36,22 @@ pub struct YieldDistributor;
 
 #[contractimpl]
 impl YieldDistributor {
-    pub fn __constructor(env: Env, admin: Address, payout_token: Address, share_token: Address) {
+    pub fn __constructor(
+        env: Env,
+        admin: Address,
+        payout_token: Address,
+        share_token: Address,
+        claim_window_secs: u64,
+    ) {
         let s = env.storage().instance();
         s.set(&DataKey::Admin, &admin);
         s.set(&DataKey::PayoutToken, &payout_token);
         s.set(&DataKey::ShareToken, &share_token);
+        s.set(&DataKey::ClaimWindowSecs, &claim_window_secs);
         s.set(&DataKey::Round, &0u32);
         s.set(&DataKey::TotalDistributed, &0i128);
         s.set(&DataKey::TotalClaimed, &0i128);
+        s.set(&DataKey::TotalReclaimed, &0i128);
     }
 
     /// Credits each holder with their allocation and pulls the total from the admin.
@@ -73,6 +81,7 @@ impl YieldDistributor {
                 .checked_add(amount)
                 .unwrap_or_else(|| panic_with_error!(&env, Error::Overflow));
             storage::set_claimable(&env, &holder, next);
+            storage::set_last_credit(&env, &holder, env.ledger().timestamp());
         }
 
         token::Client::new(&env, &storage::payout_token(&env)).transfer(
@@ -111,6 +120,37 @@ impl YieldDistributor {
             &amount,
         );
         events::claimed(&env, holder, amount);
+        amount
+    }
+
+    /// Reclaims a holder's unclaimed balance back to the admin once the claim
+    /// window has elapsed since their last credit. Returns the amount recovered.
+    pub fn reclaim(env: Env, holder: Address) -> i128 {
+        let admin = storage::admin(&env);
+        admin.require_auth();
+
+        let amount = storage::claimable(&env, &holder);
+        if amount == 0 {
+            panic_with_error!(&env, Error::NothingToClaim);
+        }
+
+        let last_credit = storage::last_credit(&env, &holder);
+        let deadline = last_credit
+            .checked_add(storage::claim_window_secs(&env))
+            .unwrap_or_else(|| panic_with_error!(&env, Error::Overflow));
+        if env.ledger().timestamp() < deadline {
+            panic_with_error!(&env, Error::ClaimWindowOpen);
+        }
+
+        storage::set_claimable(&env, &holder, 0);
+        storage::add_total(&env, DataKey::TotalReclaimed, amount);
+
+        token::Client::new(&env, &storage::payout_token(&env)).transfer(
+            &env.current_contract_address(),
+            &admin,
+            &amount,
+        );
+        events::reclaimed(&env, holder, amount);
         amount
     }
 
@@ -169,6 +209,14 @@ impl YieldDistributor {
 
     pub fn total_claimed(env: Env) -> i128 {
         storage::total(&env, DataKey::TotalClaimed)
+    }
+
+    pub fn total_reclaimed(env: Env) -> i128 {
+        storage::total(&env, DataKey::TotalReclaimed)
+    }
+
+    pub fn claim_window_secs(env: Env) -> u64 {
+        storage::claim_window_secs(&env)
     }
 
     pub fn payout_token(env: Env) -> Address {

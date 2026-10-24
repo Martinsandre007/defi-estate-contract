@@ -15,7 +15,10 @@ pub enum DataKey {
     RoundInfo(u32),
     TotalDistributed,
     TotalClaimed,
+    TotalReclaimed,
+    ClaimWindowSecs,
     Claimable(Address),
+    LastCredit(Address),
 }
 
 /// Summary of a single distribution round, kept for audits.
@@ -107,4 +110,45 @@ pub fn set_claimable(env: &Env, holder: &Address, amount: i128) {
             .persistent()
             .extend_ttl(&key, TTL_THRESHOLD, TTL_EXTEND_TO);
     }
+}
+
+pub fn claim_window_secs(env: &Env) -> u64 {
+    env.storage()
+        .instance()
+        .get(&DataKey::ClaimWindowSecs)
+        .unwrap_or(0)
+}
+
+pub fn set_claim_window_secs(env: &Env, secs: u64) {
+    env.storage()
+        .instance()
+        .set(&DataKey::ClaimWindowSecs, &secs);
+}
+
+pub fn last_credit(env: &Env, holder: &Address) -> u64 {
+    let key = DataKey::LastCredit(holder.clone());
+    let timestamp: Option<u64> = env.storage().persistent().get(&key);
+    match timestamp {
+        Some(ts) => {
+            env.storage()
+                .persistent()
+                .extend_ttl(&key, TTL_THRESHOLD, TTL_EXTEND_TO);
+            ts
+        }
+        None => 0,
+    }
+}
+
+pub fn set_last_credit(env: &Env, holder: &Address, timestamp: u64) {
+    let key = DataKey::LastCredit(holder.clone());
+    env.storage().persistent().set(&key, &timestamp);
+    env.storage()
+        .persistent()
+        .extend_ttl(&key, TTL_THRESHOLD, TTL_EXTEND_TO);
+}
+
+pub fn clear_last_credit(env: &Env, holder: &Address) {
+    env.storage()
+        .persistent()
+        .remove(&DataKey::LastCredit(holder.clone()));
 }
